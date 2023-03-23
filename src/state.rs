@@ -1,6 +1,6 @@
 use async_std::stream::Merge;
 use libp2p::PeerId;
-use libp2p::swarm::Swarm;
+use libp2p::swarm::{Swarm};
 use crate::MyBehavior;
 
 #[derive(PartialEq)]
@@ -80,5 +80,8 @@ impl State {
 
     fn on_new_round(&self, msg: Message) {
 
+    }
+
+    fn broadcast(&self, msg: Message) {
     }
 }

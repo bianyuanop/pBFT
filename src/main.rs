@@ -1,7 +1,8 @@
+use std::env;
 use futures::StreamExt;
 use libp2p::swarm::{keep_alive, NetworkBehaviour, Swarm, SwarmEvent};
 use libp2p::{identity, PeerId, Multiaddr};
-use libp2p::{mdns, gossipsub};
+use libp2p::{mdns, gossipsub::{self, IdentTopic}};
 use std::error::Error;
 use std::time::Duration;
 
@@ -9,6 +10,17 @@ mod state;
 
 #[async_std::main]
 async fn main() -> Result<(), Box<dyn Error>>{
+
+    let args: Vec<String> = env::args().collect();
+
+    let state_id: u128 = 0;
+    let f: u128 = 0;
+
+    if args.len() < 2 {
+        panic!("<id>, <f> are needed for initialization")
+    } else {
+    }
+
     let local_key = identity::Keypair::generate_ed25519();
     let local_peer_id = PeerId::from(local_key.public());
 
@@ -25,8 +37,15 @@ async fn main() -> Result<(), Box<dyn Error>>{
     let gossipsub_config = gossipsub::GossipsubConfig::default();
     let gossipsub_message_auth = gossipsub::MessageAuthenticity::Signed(local_key.clone());
     let mut gossipsub = gossipsub::Gossipsub::new(gossipsub_message_auth, gossipsub_config)?;
-    let topic = libp2p::gossipsub::IdentTopic::new("example");
-    gossipsub.subscribe(&topic)?;
+    let topics = vec![
+        IdentTopic::new("pre-prepare"),
+        IdentTopic::new("prepare"),
+        IdentTopic::new("commit"),
+    ];
+
+    for topic in topics.iter() {
+        gossipsub.subscribe(&topic)?;
+    }
 
     let behaviour = MyBehavior {
         keep_alive: keep_alive::Behaviour::default(),

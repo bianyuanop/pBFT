@@ -3,6 +3,47 @@ use libp2p::PeerId;
 use libp2p::swarm::{Swarm};
 use crate::MyBehavior;
 
+
+pub enum MessageType {
+    PrePrepare,
+    Prepare,
+    Commit,
+    FinalCommit,
+    NewRound,
+}
+
+impl MessageType {
+    pub fn 
+}
+
+pub struct  Message {
+    pub id: u128,
+    pub round: u128,
+    pub m_type: MessageType,
+    // parse payload by type
+    pub payload: Vec<u8>,
+}
+
+impl Message {
+    pub fn serialize(&self) -> Vec<u8> {
+        unimplemented!()
+    } 
+
+    pub fn from(data: Vec<u8>) -> Self {
+        unimplemented!()
+    }
+}
+
+pub enum ResponseType {
+    Broadcast,
+    DoNothing
+}
+
+pub struct Response {
+    pub r_type: ResponseType,
+    pub m: Message,
+}
+
 #[derive(PartialEq)]
 pub enum Phase {
     NewRound,
@@ -17,33 +58,28 @@ pub struct State {
     pub id: u128,
     pub round: u128,
     pub phase: Phase,
-    pub proposer: PeerId,
+    pub proposer: u128,
     pub prepare_pool: Vec<PeerId>,
     pub commit_pool: Vec<PeerId>,
     pub peers: Vec<PeerId>,
-    // p2p swarm will always live as there is state
-    pub swarm: &'static Swarm<MyBehavior>,
     // pre-defined 
     pub f: u128,
 }
 
-pub enum MessageType {
-    PrePrepare,
-    Prepare,
-    Commit,
-    FinalCommit,
-    NewRound,
-}
-
-pub struct  Message {
-    pub round: u128,
-    pub m_type: MessageType,
-    // parse payload by type
-    pub payload: Vec<u8>,
-}
-
-
 impl State {
+    pub fn new(id: u128, f: u128) -> Self {
+        Self {
+            id,
+            f,
+            round: 0,
+            phase: Phase::NewRound,
+            proposer: 0,
+            prepare_pool: vec![],
+            commit_pool: vec![],
+            peers: vec![],
+        }
+    }
+
     pub fn on_message(&self, msg: Message) {
         match msg.m_type {
             MessageType::NewRound => self.on_new_round(msg),

@@ -5,6 +5,7 @@ use libp2p::{identity, PeerId, Multiaddr};
 use libp2p::{mdns, gossipsub::{self, IdentTopic}};
 use std::error::Error;
 use std::time::Duration;
+use state::{State, Phase};
 
 mod state;
 
@@ -13,12 +14,14 @@ async fn main() -> Result<(), Box<dyn Error>>{
 
     let args: Vec<String> = env::args().collect();
 
-    let state_id: u128 = 0;
-    let f: u128 = 0;
+    let mut state_id: u128 = 0;
+    let mut f: u128 = 0;
 
     if args.len() < 2 {
         panic!("<id>, <f> are needed for initialization")
     } else {
+        state_id = args[0].parse()?;
+        f = args[1].parse()?;
     }
 
     let local_key = identity::Keypair::generate_ed25519();
@@ -54,6 +57,7 @@ async fn main() -> Result<(), Box<dyn Error>>{
     };
 
     let mut swarm = Swarm::with_async_std_executor(transport, behaviour, local_peer_id);
+    let mut state = State::new(state_id, f);
 
     // system assign a port
     swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
@@ -85,11 +89,13 @@ async fn main() -> Result<(), Box<dyn Error>>{
                     },
                     MyBehaviorEvent::Gossipsub(gossipsub::GossipsubEvent::Subscribed { peer_id, topic }) => {
                         println!("{peer_id:?} subscribed {topic:?}");
-                        let msg = "Hello, world";
-                        swarm.behaviour_mut().gossipsub.publish(topic, msg.as_bytes())?;
                     },
                     MyBehaviorEvent::Gossipsub(gossipsub::GossipsubEvent::Message { propagation_source, message_id, message }) => {
-                        println!( "Got message: '{}' with id: {message_id} from peer: {propagation_source}", String::from_utf8_lossy(&message.data))
+                        println!( "Got message: '{}' with id: {message_id} from peer: {propagation_source}", String::from_utf8_lossy(&message.data));
+
+                        let decapsulate_msg = state::Message::from(message.data);
+
+                        state.on_message(decapsulate_msg);
                     },
                     _ => println!("{event:?}")
                 }

@@ -40,15 +40,10 @@ async fn main() -> Result<(), Box<dyn Error>>{
     let gossipsub_config = gossipsub::GossipsubConfig::default();
     let gossipsub_message_auth = gossipsub::MessageAuthenticity::Signed(local_key.clone());
     let mut gossipsub = gossipsub::Gossipsub::new(gossipsub_message_auth, gossipsub_config)?;
-    let topics = vec![
-        IdentTopic::new("pre-prepare"),
-        IdentTopic::new("prepare"),
-        IdentTopic::new("commit"),
-    ];
 
-    for topic in topics.iter() {
-        gossipsub.subscribe(&topic)?;
-    }
+    let topic = IdentTopic::new("message");
+    gossipsub.subscribe(&topic)?;
+
 
     let behaviour = MyBehavior {
         keep_alive: keep_alive::Behaviour::default(),
@@ -93,9 +88,17 @@ async fn main() -> Result<(), Box<dyn Error>>{
                     MyBehaviorEvent::Gossipsub(gossipsub::GossipsubEvent::Message { propagation_source, message_id, message }) => {
                         println!( "Got message: '{}' with id: {message_id} from peer: {propagation_source}", String::from_utf8_lossy(&message.data));
 
-                        let decapsulate_msg = state::Message::from(message.data);
+                        let decapsulate_msg: state::Message = serde_json::from_slice(&message.data)?;
 
-                        state.on_message(decapsulate_msg);
+                        let resp = state.on_message(decapsulate_msg);
+
+                        match resp.r_type {
+                            state::ResponseType::Broadcast => {
+                                // TODO: broadcast message here
+
+                            },
+                            state::ResponseType::DoNothing => {}
+                        };
                     },
                     _ => println!("{event:?}")
                 }

@@ -1,20 +1,20 @@
-use std::collections::HashMap;
-use std::{default, hash};
+use std::{collections::HashMap, thread, time::Duration};
 
-use async_std::stream::Merge;
 use libp2p::PeerId;
-use libp2p::swarm::{Swarm};
-use crate::MyBehavior;
 use serde::{Serialize, Deserialize};
 
 
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub enum MessageType {
+    #[default]
     PrePrepare,
     Prepare,
     Commit,
-    #[default]
-    FinalCommit,
+}
+
+pub struct Transaction {
+    pub opcode: u128,
+    pub payload: Vec<u8>
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -61,6 +61,7 @@ pub struct State {
     pub peers: HashMap<PeerId, u128>,
     // pre-defined 
     pub f: u128,
+    pub tx_pool: Vec<Transaction>
 }
 
 impl State {
@@ -74,6 +75,7 @@ impl State {
             prepare_pool: vec![],
             commit_pool: vec![],
             peers: HashMap::new(),
+            tx_pool: vec![]
         }
     }
 
@@ -86,12 +88,12 @@ impl State {
             MessageType::PrePrepare => self.on_pre_prepare(msg),
             MessageType::Prepare => self.on_prepare(msg),
             MessageType::Commit => self.on_commit(msg),
-            MessageType::FinalCommit => self.on_final_commit(msg),
         }
     }
 
     fn on_pre_prepare(&mut self, msg: Message) -> Response {
-        if self.phase != Phase::NewRound {
+        if self.phase != Phase::NewRound || self.phase != Phase::PrePrepared {
+            // do nothing
             return Response::default();
         }
         // we are not verifying peer here since the messages are sent through p2p encrypted channel
@@ -124,23 +126,77 @@ impl State {
         // TODO: implement a peerid to real id pool
 
         self.prepare_pool.push(msg.id);
+        
+        if self.prepare_pool.len() as u128 > self.f {
+            self.phase = Phase::Committed;
+            let msg = Message {
+                id: self.id,
+                round: self.round,
+                m_type: MessageType::Commit,
+                payload: vec![],
+            };
+            return Response {
+                r_type: ResponseType::Broadcast,
+                m: msg
+            };
+        }
 
         Response::default()
     }
 
     fn on_commit(&mut self, msg: Message) -> Response {
-        unimplemented!();
-    }
+        if self.phase != Phase::Committed {
+            return Response::default();
+        }
 
-    fn on_final_commit(&mut self, msg: Message) -> Response {
-        unimplemented!();
+        self.commit_pool.push(msg.id);
+
+        if self.commit_pool.len() as u128 > self.f {
+            self.phase = Phase::FinalCommitted;
+
+            return self.new_round();
+        }
+
+
+        Response::default()
     }
 
     fn on_round_change(&mut self, msg: Message) -> Response {
         unimplemented!();
     }
 
-    fn on_new_round(&mut self, msg: Message) {
-        unimplemented!();
+    fn new_round(&mut self) -> Response {
+        self.round = self.round + 1;
+
+        self.commit_pool.clear();
+        self.prepare_pool.clear();
+
+        self.phase = Phase::NewRound;
+        
+
+
+        // TODO: pick up some transactions here 
+
+        // become proposer
+        if self.id == self.round % self.f {
+            self.phase = Phase::PrePrepared;
+            let msg = Message {
+                id: self.id,
+                round: self.round,
+                m_type: MessageType::Prepare,
+                payload: vec![]
+            };
+
+
+            // sleep 1s to avoid too fast of processing
+            thread::sleep(Duration::from_millis(1000));
+
+            return Response {
+                r_type: ResponseType::Broadcast,
+                m: msg
+            }
+        }
+
+        Response::default()
     }
 }

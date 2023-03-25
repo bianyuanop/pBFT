@@ -8,6 +8,7 @@ use std::time::Duration;
 use state::{State, Phase};
 
 mod state;
+mod report;
 
 #[async_std::main]
 async fn main() -> Result<(), Box<dyn Error>>{

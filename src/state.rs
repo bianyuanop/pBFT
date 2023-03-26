@@ -40,7 +40,7 @@ pub struct Response {
     pub m: Message,
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Debug, Eq)]
 pub enum Phase {
     NewRound,
     PrePrepared,
@@ -79,7 +79,7 @@ impl State {
         }
     }
 
-    pub fn on_message(&mut self, msg: Message) -> Response {
+    pub fn on_message(&mut self, msg: Message, peer: PeerId) -> Response {
         if msg.round != self.round {
             return Response::default();
         }
@@ -92,7 +92,7 @@ impl State {
     }
 
     fn on_pre_prepare(&mut self, msg: Message) -> Response {
-        if self.phase != Phase::NewRound || self.phase != Phase::PrePrepared {
+        if self.phase != Phase::NewRound {
             // do nothing
             return Response::default();
         }
@@ -100,9 +100,15 @@ impl State {
 
         // TODO: excute the message, then verify the checksum
 
+        println!("Preparaing");
+
 
         // phase change
         self.phase = Phase::Prepared;
+
+        self.prepare_pool.push(self.id);
+        // push proposer's id
+        self.prepare_pool.push(msg.id);
 
         let msg = Message {
             id: self.id,
@@ -127,8 +133,12 @@ impl State {
 
         self.prepare_pool.push(msg.id);
         
-        if self.prepare_pool.len() as u128 > self.f {
+        if self.prepare_pool.len() as u128 > self.f * 2 + 1 {
             self.phase = Phase::Committed;
+
+            // commit self
+            self.commit_pool.push(self.id);
+
             let msg = Message {
                 id: self.id,
                 round: self.round,
@@ -151,7 +161,7 @@ impl State {
 
         self.commit_pool.push(msg.id);
 
-        if self.commit_pool.len() as u128 > self.f {
+        if self.commit_pool.len() as u128 > self.f * 2 + 1 {
             self.phase = Phase::FinalCommitted;
 
             return self.new_round();
@@ -165,25 +175,52 @@ impl State {
         unimplemented!();
     }
 
+    pub fn on_new_peer(&mut self, peer: PeerId) -> Response {
+        if self.peers.contains_key(&peer) {
+            return Response::default()
+        }
+
+        self.peers.insert(peer, self.f*3 + 2);
+
+        return self.new_round()
+    }
+
+    pub fn on_remove_peer(&mut self, peer: PeerId) -> Response {
+        self.peers.remove(&peer);
+
+        Response::default()
+    }
+
     fn new_round(&mut self) -> Response {
-        self.round = self.round + 1;
+        if (self.peers.len() as u128) < self.f * 3 {
+            return Response::default()
+        }
+
+        if (self.phase != Phase::NewRound) && (self.phase != Phase::FinalCommitted ) && (self.phase != Phase::RoundChange) {
+            return Response::default()
+        } 
+        
+        // if the state is not changed from FinalCommitted, don't increse round
+        if self.phase != Phase::NewRound {self.round = self.round + 1;} 
 
         self.commit_pool.clear();
         self.prepare_pool.clear();
 
         self.phase = Phase::NewRound;
-        
-
 
         // TODO: pick up some transactions here 
 
         // become proposer
         if self.id == self.round % self.f {
-            self.phase = Phase::PrePrepared;
+            println!("{:?} is proposer", self.id);
+
+            self.prepare_pool.push(self.id);
+            self.phase = Phase::Prepared;
+
             let msg = Message {
                 id: self.id,
                 round: self.round,
-                m_type: MessageType::Prepare,
+                m_type: MessageType::PrePrepare,
                 payload: vec![]
             };
 
@@ -196,6 +233,7 @@ impl State {
                 m: msg
             }
         }
+        println!("not proposer");
 
         Response::default()
     }

@@ -1,7 +1,7 @@
 use std::env;
+use std::sync::Arc;
 use std::thread;
 use futures::StreamExt;
-use libp2p::gossipsub::error::PublishError;
 use libp2p::swarm::{keep_alive, NetworkBehaviour, Swarm, SwarmEvent};
 use libp2p::{identity, PeerId, Multiaddr};
 use libp2p::{mdns, gossipsub::{self, IdentTopic}};
@@ -9,6 +9,9 @@ use state::Response;
 use std::error::Error;
 use std::time::Duration;
 use state::{State, Phase};
+use sqlx::MySqlConnection;
+use sqlx::{Connection};
+use report::report_message;
 
 mod state;
 mod report;
@@ -57,6 +60,9 @@ async fn main() -> Result<(), Box<dyn Error>>{
     let mut swarm = Swarm::with_async_std_executor(transport, behaviour, local_peer_id);
     let mut state = State::new(state_id, f);
 
+    // report service
+    let mut conn = sqlx::MySqlConnection::connect("mysql://chan:Diy.2002@localhost/pbft").await.unwrap();
+
     // system assign a port
     swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
 
@@ -101,12 +107,17 @@ async fn main() -> Result<(), Box<dyn Error>>{
 
                         println!("[STATE | {:?}] {:?}", state.id, state.phase);
                         let decapsulate_msg: state::Message = serde_json::from_slice(&message.data)?;
+                        let origin_id = decapsulate_msg.id.clone();
+                        let origin_action = decapsulate_msg.m_type.to_string();
+
                         println!("received msg: {:?}", decapsulate_msg);
 
                         let resp = state.on_message(decapsulate_msg, propagation_source);
                         println!("Response {:?}", resp);
 
                         broadcast(&mut swarm, msg_topic.clone(), resp);
+
+                        report_message(&mut conn, origin_action, origin_id, state.id, state.round, state.phase.to_string()).await;
 
                         println!();
                     },

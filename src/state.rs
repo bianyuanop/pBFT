@@ -1,4 +1,4 @@
-use std::{collections::HashMap, thread, time::Duration};
+use std::{collections::HashMap, thread, time::Duration, fmt::Display};
 
 use libp2p::PeerId;
 use serde::{Serialize, Deserialize};
@@ -10,6 +10,12 @@ pub enum MessageType {
     PrePrepare,
     Prepare,
     Commit,
+}
+
+impl Display for MessageType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self) 
+    }
 }
 
 pub struct Transaction {
@@ -48,6 +54,12 @@ pub enum Phase {
     Committed,
     FinalCommitted,
     RoundChange,
+}
+
+impl Display for Phase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self) 
+    }
 }
 
 pub struct State {

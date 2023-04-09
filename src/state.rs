@@ -1,20 +1,20 @@
 use std::{collections::{HashMap, VecDeque}, thread, time::{Duration, Instant}, fmt::Display, vec, task::Poll};
 
 use async_std::stream::{
-    Interval, interval, StreamExt
+    Interval, interval, StreamExt, Merge
 };
 use futures::{Future, future};
 use libp2p::PeerId;
 use serde::{Serialize, Deserialize};
 
 
-#[derive(Debug, Serialize, Deserialize, Default, Clone, Copy)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone, Copy, PartialEq)]
 pub enum MessageType {
     #[default]
     PrePrepare,
     Prepare,
     Commit,
-    ViewChange,
+    RoundChange,
 }
 
 impl Display for MessageType {
@@ -74,6 +74,8 @@ pub struct State {
     pub proposer: u128,
     pub prepare_pool: Vec<u128>,
     pub commit_pool: Vec<u128>,
+    // different from above two since there may be different next round will be used
+    pub round_change_pool: HashMap<u128, Vec<u128>>,
     // PeerId to realId mapping
     pub peers: HashMap<PeerId, u128>,
     // pre-defined 
@@ -97,6 +99,7 @@ impl State {
             proposer: 0,
             prepare_pool: vec![],
             commit_pool: vec![],
+            round_change_pool: HashMap::new(),
             peers: HashMap::new(),
             tx_pool: vec![],
             message2send: VecDeque::new(),
@@ -122,12 +125,10 @@ impl State {
             MessageType::PrePrepare => self.on_pre_prepare(msg),
             MessageType::Prepare => self.on_prepare(msg),
             MessageType::Commit => self.on_commit(msg),
-
-            // there will be no view change msg issued here
-            _ => Response::default()
+            MessageType::RoundChange => self.on_round_change(msg),
         };
 
-        // this means state change, reset the `last_update_time`
+        // this means state change, refresh the `last_update_time`
         if resp.r_type == ResponseType::Broadcast {
             self.last_update_time = Instant::now();
         }
@@ -144,7 +145,6 @@ impl State {
 
         // TODO: excute the message, then verify the checksum
 
-        println!("Preparaing");
 
 
         // phase change
@@ -216,7 +216,19 @@ impl State {
     }
 
     fn on_round_change(&mut self, msg: Message) -> Response {
-        unimplemented!();
+        if let Some(pool) = self.round_change_pool.get_mut(&msg.round) {
+            pool.push(msg.id);
+            if pool.len() as u128 > 2*self.f + 1 {
+                // update the round to be the newest one
+                self.round = msg.round;
+
+                return self.new_round()
+            }
+        } else {
+            self.round_change_pool.insert(msg.id, vec![msg.id, ]);
+
+        }
+        Response::default()
     }
 
     pub fn on_new_peer(&mut self, peer: PeerId) -> Response {
@@ -236,7 +248,7 @@ impl State {
     }
 
     fn new_round(&mut self) -> Response {
-        if (self.peers.len() as u128) < self.f * 3 {
+        if (self.peers.len() as u128) < self.f * 2 + 1 {
             return Response::default()
         }
 
@@ -249,6 +261,7 @@ impl State {
 
         self.commit_pool.clear();
         self.prepare_pool.clear();
+        self.round_change_pool.clear();
 
         self.phase = Phase::NewRound;
 
@@ -282,12 +295,15 @@ impl State {
         Response::default()
     }
 
-    pub fn check_timeout(&self) -> Response {
-        if self.last_update_time - Instant::now() > self.timeout {
+    pub fn check_timeout(&mut self) -> Response {
+        if self.last_update_time.elapsed() > self.timeout {
+            // update the last update time
+            self.last_update_time = Instant::now();
+
             let msg = Message {
                 id: self.id,
                 round: self.round,
-                m_type: MessageType::ViewChange,
+                m_type: MessageType::RoundChange,
                 payload: vec![]
             };
 

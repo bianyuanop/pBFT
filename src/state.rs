@@ -1,9 +1,9 @@
 use std::{collections::{HashMap, VecDeque}, thread, time::{Duration, Instant}, fmt::Display, vec, task::Poll};
 
 use async_std::stream::{
-    Interval, interval
+    Interval, interval, StreamExt
 };
-use futures::Future;
+use futures::{Future, future};
 use libp2p::PeerId;
 use serde::{Serialize, Deserialize};
 
@@ -14,6 +14,7 @@ pub enum MessageType {
     PrePrepare,
     Prepare,
     Commit,
+    ViewChange,
 }
 
 impl Display for MessageType {
@@ -37,7 +38,7 @@ pub struct  Message {
 }
 
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq)]
 pub enum ResponseType {
     Broadcast,
     #[default]
@@ -82,7 +83,8 @@ pub struct State {
     // main thread will automatically fetch messages here to send
     pub message2send: VecDeque<Message>,
     pub last_update_time: Instant,
-    pub ticker: Interval
+
+    timeout: Duration
 }
 
 impl State {
@@ -99,8 +101,7 @@ impl State {
             tx_pool: vec![],
             message2send: VecDeque::new(),
             last_update_time: Instant::now(),
-            // used for timeout
-            ticker: interval(Duration::from_millis(200)),
+            timeout: Duration::from_secs(5),
         }
     }
 
@@ -117,11 +118,21 @@ impl State {
             return Response::default();
         }
 
-        match msg.m_type {
+        let resp = match msg.m_type {
             MessageType::PrePrepare => self.on_pre_prepare(msg),
             MessageType::Prepare => self.on_prepare(msg),
             MessageType::Commit => self.on_commit(msg),
+
+            // there will be no view change msg issued here
+            _ => Response::default()
+        };
+
+        // this means state change, reset the `last_update_time`
+        if resp.r_type == ResponseType::Broadcast {
+            self.last_update_time = Instant::now();
         }
+
+        resp
     }
 
     fn on_pre_prepare(&mut self, msg: Message) -> Response {
@@ -271,7 +282,23 @@ impl State {
         Response::default()
     }
 
-    pub fn fetch_one_message(&mut self) -> Option<Message> {
-        self.message2send.pop_front()
+    pub fn check_timeout(&self) -> Response {
+        if self.last_update_time - Instant::now() > self.timeout {
+            let msg = Message {
+                id: self.id,
+                round: self.round,
+                m_type: MessageType::ViewChange,
+                payload: vec![]
+            };
+
+            let resp = Response {
+                r_type: ResponseType::Broadcast,
+                m: msg
+            };
+
+            resp
+        } else {
+            Response::default()
+        }
     }
 }

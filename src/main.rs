@@ -1,7 +1,10 @@
 use std::env;
 use std::sync::Arc;
 use std::thread;
-use futures::StreamExt;
+use futures::{
+    StreamExt,
+    select
+};
 use libp2p::swarm::{keep_alive, NetworkBehaviour, Swarm, SwarmEvent};
 use libp2p::{identity, PeerId, Multiaddr};
 use libp2p::{mdns, gossipsub::{self, IdentTopic}};
@@ -66,71 +69,145 @@ async fn main() -> Result<(), Box<dyn Error>>{
     // system assign a port
     swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
 
+    // used for checking timeout
+    let mut ticker = async_std::stream::interval(Duration::from_millis(200)).fuse();
+
     loop {
-        match swarm.select_next_some().await {
-            SwarmEvent::NewListenAddr { address, ..} => println!("Listening on {address:?}") ,
-            SwarmEvent::Behaviour(event) => {
-                // println!("{event:?}");
+        select! {
+            event = swarm.select_next_some() => match event {
+                SwarmEvent::NewListenAddr { address, ..} => println!("Listening on {address:?}") ,
+                SwarmEvent::Behaviour(event) => {
+                    // println!("{event:?}");
 
-                match event {
-                    MyBehaviorEvent::Mdns(mdns::Event::Discovered(list)) => {
-                        for (peer_id, _multiaddr) in list {
-                            // println!("mDNS discovered a new peer: {peer_id}");
-                            swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
-                        }
-                    },
-                    MyBehaviorEvent::Mdns(mdns::Event::Expired(list)) => {
-                        for (peer_id, _multiaddr) in list {
-                            // println!("mDNS discovered peer expired: {peer_id}");
-                            swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer_id);
-                            state.on_remove_peer(peer_id);
-                        }
-                    },
-                    MyBehaviorEvent::Gossipsub(gossipsub::GossipsubEvent::Subscribed { peer_id, topic }) => {
-                        println!("{peer_id:?} subscribed {topic:?}");
-                        let resp = state.on_new_peer(peer_id);
+                    match event {
+                        MyBehaviorEvent::Mdns(mdns::Event::Discovered(list)) => {
+                            for (peer_id, _multiaddr) in list {
+                                // println!("mDNS discovered a new peer: {peer_id}");
+                                swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
+                            }
+                        },
+                        MyBehaviorEvent::Mdns(mdns::Event::Expired(list)) => {
+                            for (peer_id, _multiaddr) in list {
+                                // println!("mDNS discovered peer expired: {peer_id}");
+                                swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer_id);
+                                state.on_remove_peer(peer_id);
+                            }
+                        },
+                        MyBehaviorEvent::Gossipsub(gossipsub::GossipsubEvent::Subscribed { peer_id, topic }) => {
+                            println!("{peer_id:?} subscribed {topic:?}");
+                            let resp = state.on_new_peer(peer_id);
 
-                        broadcast(&mut swarm, msg_topic.clone(), resp);
-                    },
-                    MyBehaviorEvent::Gossipsub(gossipsub::GossipsubEvent::Unsubscribed {
-                        peer_id,
-                        topic
-                    }) => {
-                        println!("{peer_id:?} unsubscribed {topic:?}");
-                    },
-                    MyBehaviorEvent::Gossipsub(gossipsub::GossipsubEvent::GossipsubNotSupported { peer_id }) => {
-                        println!("gossipsub is not supported by {:?}", peer_id);
+                            broadcast(&mut swarm, msg_topic.clone(), resp);
+                        },
+                        MyBehaviorEvent::Gossipsub(gossipsub::GossipsubEvent::Unsubscribed {
+                            peer_id,
+                            topic
+                        }) => {
+                            println!("{peer_id:?} unsubscribed {topic:?}");
+                        },
+                        MyBehaviorEvent::Gossipsub(gossipsub::GossipsubEvent::GossipsubNotSupported { peer_id }) => {
+                            println!("gossipsub is not supported by {:?}", peer_id);
+                        }
+                        
+                        MyBehaviorEvent::Gossipsub(gossipsub::GossipsubEvent::Message { propagation_source, message_id, message }) => {
+                            // println!( "Got message: '{}' with id: {message_id} from peer: {propagation_source}", String::from_utf8_lossy(&message.data));
+
+                            println!("[STATE | {:?}] {:?}", state.id, state.phase);
+                            let decapsulate_msg: state::Message = serde_json::from_slice(&message.data)?;
+                            let origin_id = decapsulate_msg.id.clone();
+                            let origin_action = decapsulate_msg.m_type.to_string();
+
+                            println!("received msg: {:?}", decapsulate_msg);
+
+                            let resp = state.on_message(decapsulate_msg, propagation_source);
+                            println!("Response {:?}", resp);
+
+                            broadcast(&mut swarm, msg_topic.clone(), resp);
+
+                            report_message(&mut conn, origin_action, origin_id, state.id, state.round, state.phase.to_string()).await;
+
+                            println!();
+                        },
+                        _ => println!("{event:?}")
                     }
-                    
-                    MyBehaviorEvent::Gossipsub(gossipsub::GossipsubEvent::Message { propagation_source, message_id, message }) => {
-                        // println!( "Got message: '{}' with id: {message_id} from peer: {propagation_source}", String::from_utf8_lossy(&message.data));
-
-                        println!("[STATE | {:?}] {:?}", state.id, state.phase);
-                        let decapsulate_msg: state::Message = serde_json::from_slice(&message.data)?;
-                        let origin_id = decapsulate_msg.id.clone();
-                        let origin_action = decapsulate_msg.m_type.to_string();
-
-                        println!("received msg: {:?}", decapsulate_msg);
-
-                        let resp = state.on_message(decapsulate_msg, propagation_source);
-                        println!("Response {:?}", resp);
-
-                        broadcast(&mut swarm, msg_topic.clone(), resp);
-
-                        report_message(&mut conn, origin_action, origin_id, state.id, state.round, state.phase.to_string()).await;
-
-                        println!();
-                    },
-                    _ => println!("{event:?}")
-                }
+                },
+                _ => {}
             },
-            _ => {}
+
+            
+            _ = ticker.select_next_some() => {
+                let resp = state.check_timeout();
+                broadcast(&mut swarm, msg_topic.clone(), resp);
+            },
         }
 
-        // fetch some messages from state
-        if let Some(msg) = state.fetch_one_message() {
-            broadcast(&mut swarm, msg_topic.clone(), Response { r_type: state::ResponseType::Broadcast, m: msg })
-        }
+
+
+
+        // match swarm.select_next_some().await {
+        //     SwarmEvent::NewListenAddr { address, ..} => println!("Listening on {address:?}") ,
+        //     SwarmEvent::Behaviour(event) => {
+        //         // println!("{event:?}");
+
+        //         match event {
+        //             MyBehaviorEvent::Mdns(mdns::Event::Discovered(list)) => {
+        //                 for (peer_id, _multiaddr) in list {
+        //                     // println!("mDNS discovered a new peer: {peer_id}");
+        //                     swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
+        //                 }
+        //             },
+        //             MyBehaviorEvent::Mdns(mdns::Event::Expired(list)) => {
+        //                 for (peer_id, _multiaddr) in list {
+        //                     // println!("mDNS discovered peer expired: {peer_id}");
+        //                     swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer_id);
+        //                     state.on_remove_peer(peer_id);
+        //                 }
+        //             },
+        //             MyBehaviorEvent::Gossipsub(gossipsub::GossipsubEvent::Subscribed { peer_id, topic }) => {
+        //                 println!("{peer_id:?} subscribed {topic:?}");
+        //                 let resp = state.on_new_peer(peer_id);
+
+        //                 broadcast(&mut swarm, msg_topic.clone(), resp);
+        //             },
+        //             MyBehaviorEvent::Gossipsub(gossipsub::GossipsubEvent::Unsubscribed {
+        //                 peer_id,
+        //                 topic
+        //             }) => {
+        //                 println!("{peer_id:?} unsubscribed {topic:?}");
+        //             },
+        //             MyBehaviorEvent::Gossipsub(gossipsub::GossipsubEvent::GossipsubNotSupported { peer_id }) => {
+        //                 println!("gossipsub is not supported by {:?}", peer_id);
+        //             }
+                    
+        //             MyBehaviorEvent::Gossipsub(gossipsub::GossipsubEvent::Message { propagation_source, message_id, message }) => {
+        //                 // println!( "Got message: '{}' with id: {message_id} from peer: {propagation_source}", String::from_utf8_lossy(&message.data));
+
+        //                 println!("[STATE | {:?}] {:?}", state.id, state.phase);
+        //                 let decapsulate_msg: state::Message = serde_json::from_slice(&message.data)?;
+        //                 let origin_id = decapsulate_msg.id.clone();
+        //                 let origin_action = decapsulate_msg.m_type.to_string();
+
+        //                 println!("received msg: {:?}", decapsulate_msg);
+
+        //                 let resp = state.on_message(decapsulate_msg, propagation_source);
+        //                 println!("Response {:?}", resp);
+
+        //                 broadcast(&mut swarm, msg_topic.clone(), resp);
+
+        //                 report_message(&mut conn, origin_action, origin_id, state.id, state.round, state.phase.to_string()).await;
+
+        //                 println!();
+        //             },
+        //             _ => println!("{event:?}")
+        //         }
+        //     },
+        //     _ => {}
+        // }
+
+        // // check interval
+        // if let Some(_) = state.ticker.next().await {
+        //     println!("Ticking")
+        // }
     }
 }
 

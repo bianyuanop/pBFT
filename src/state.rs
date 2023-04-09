@@ -1,10 +1,14 @@
-use std::{collections::HashMap, thread, time::Duration, fmt::Display};
+use std::{collections::{HashMap, VecDeque}, thread, time::{Duration, Instant}, fmt::Display, vec, task::Poll};
 
+use async_std::stream::{
+    Interval, interval
+};
+use futures::Future;
 use libp2p::PeerId;
 use serde::{Serialize, Deserialize};
 
 
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone, Copy)]
 pub enum MessageType {
     #[default]
     PrePrepare,
@@ -23,7 +27,7 @@ pub struct Transaction {
     pub payload: Vec<u8>
 }
 
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct  Message {
     pub id: u128,
     pub round: u128,
@@ -73,7 +77,12 @@ pub struct State {
     pub peers: HashMap<PeerId, u128>,
     // pre-defined 
     pub f: u128,
-    pub tx_pool: Vec<Transaction>
+    pub tx_pool: Vec<Transaction>,
+
+    // main thread will automatically fetch messages here to send
+    pub message2send: VecDeque<Message>,
+    pub last_update_time: Instant,
+    pub ticker: Interval
 }
 
 impl State {
@@ -87,7 +96,19 @@ impl State {
             prepare_pool: vec![],
             commit_pool: vec![],
             peers: HashMap::new(),
-            tx_pool: vec![]
+            tx_pool: vec![],
+            message2send: VecDeque::new(),
+            last_update_time: Instant::now(),
+            // used for timeout
+            ticker: interval(Duration::from_millis(200)),
+        }
+    }
+
+    pub fn is_timeout(&self) -> bool {
+        if self.last_update_time.elapsed() > Duration::from_secs(2) {
+            true
+        } else {
+            false
         }
     }
 
@@ -248,5 +269,9 @@ impl State {
         println!("not proposer");
 
         Response::default()
+    }
+
+    pub fn fetch_one_message(&mut self) -> Option<Message> {
+        self.message2send.pop_front()
     }
 }

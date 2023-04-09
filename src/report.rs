@@ -5,7 +5,7 @@ use sqlx::MySqlConnection;
 pub async fn report_message(conn: &mut MySqlConnection, action: String, origin: u128, target: u128, round: u128, state: String) {
     let raw_query = format!("
         INSERT INTO edges (action, origin, target, ts, round, state) 
-        VALUES ('{0}', '{1}', '{2}', now(), '{3}', '{4}')", action, origin, target, round, state);
+        VALUES ('{0}', '{1}', '{2}', now(6), '{3}', '{4}')", action, origin, target, round, state);
     let query = sqlx::query(&raw_query);
     query.execute(conn).await.unwrap();
 }
@@ -28,7 +28,7 @@ mod tests {
         // test insert
         let raw_query = format!("
             INSERT INTO edges (action, origin, target, ts, round, state) 
-            VALUES ('{0}', '{1}', '{2}', now(), '{3}', '{4}')", action, origin, target, round, state);
+            VALUES ('{0}', '{1}', '{2}', now(6), '{3}', '{4}')", action, origin, target, round, state);
         let query = sqlx::query(&raw_query);
         query.execute(&mut conn).await.unwrap();
 

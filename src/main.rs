@@ -126,6 +126,11 @@ async fn main() -> Result<(), Box<dyn Error>>{
             },
             _ => {}
         }
+
+        // fetch some messages from state
+        if let Some(msg) = state.fetch_one_message() {
+            broadcast(&mut swarm, msg_topic.clone(), Response { r_type: state::ResponseType::Broadcast, m: msg })
+        }
     }
 }
 

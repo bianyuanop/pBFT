@@ -86,7 +86,8 @@ pub struct State {
     pub message2send: VecDeque<Message>,
     pub last_update_time: Instant,
 
-    timeout: Duration
+    timeout: Duration,
+    started: bool
 }
 
 impl State {
@@ -105,6 +106,7 @@ impl State {
             message2send: VecDeque::new(),
             last_update_time: Instant::now(),
             timeout: Duration::from_secs(5),
+            started: false
         }
     }
 
@@ -216,17 +218,18 @@ impl State {
     }
 
     fn on_round_change(&mut self, msg: Message) -> Response {
+
         if let Some(pool) = self.round_change_pool.get_mut(&msg.round) {
             pool.push(msg.id);
-            if pool.len() as u128 > 2*self.f + 1 {
+            if pool.len() as u128 >= 2*self.f + 1 {
                 // update the round to be the newest one
                 self.round = msg.round;
 
+                println!("round change pool len {0}", self.round);
                 return self.new_round()
             }
         } else {
             self.round_change_pool.insert(msg.id, vec![msg.id, ]);
-
         }
         Response::default()
     }
@@ -236,9 +239,16 @@ impl State {
             return Response::default()
         }
 
+        // control initial nodes here 
         self.peers.insert(peer, self.f*3 + 2);
 
-        return self.new_round()
+        if self.peers.len() as u128 >= 3 * self.f  && !self.started {
+            // start up
+            self.started = true;
+            self.new_round()
+        } else {
+            Response::default()
+        }
     }
 
     pub fn on_remove_peer(&mut self, peer: PeerId) -> Response {
@@ -296,6 +306,10 @@ impl State {
     }
 
     pub fn check_timeout(&mut self) -> Response {
+        if !self.started {
+            return Response::default()
+        }
+
         if self.last_update_time.elapsed() > self.timeout {
             // update the last update time
             self.last_update_time = Instant::now();

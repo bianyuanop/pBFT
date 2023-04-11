@@ -1,6 +1,7 @@
 use std::env;
 use std::sync::Arc;
 use std::thread;
+use colored::Colorize;
 use futures::{
     StreamExt,
     select
@@ -115,7 +116,7 @@ async fn main() -> Result<(), Box<dyn Error>>{
                         MyBehaviorEvent::Gossipsub(gossipsub::GossipsubEvent::Message { propagation_source, message_id, message }) => {
                             // println!( "Got message: '{}' with id: {message_id} from peer: {propagation_source}", String::from_utf8_lossy(&message.data));
 
-                            println!("[STATE | {:?}] {:?}", state.id, state.phase);
+                            println!("[{:?} | {:?}] {:?}", state.round, state.id, state.phase);
                             let decapsulate_msg: state::Message = serde_json::from_slice(&message.data)?;
                             let origin_id = decapsulate_msg.id.clone();
                             let origin_action = decapsulate_msg.m_type.to_string();
@@ -142,7 +143,7 @@ async fn main() -> Result<(), Box<dyn Error>>{
             _ = ticker.select_next_some() => {
                 let resp = state.check_timeout();
                 if resp.m.m_type == MessageType::RoundChange {
-                    println!("round change")
+                    println!("{}", "impulsing round change".blue());
                 }
                 broadcast(&mut swarm, msg_topic.clone(), resp);
             },

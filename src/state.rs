@@ -1,11 +1,13 @@
 use std::{collections::{HashMap, VecDeque}, thread, time::{Duration, Instant}, fmt::Display, vec, task::Poll};
+use colored::Colorize;
+extern crate libp2p;
 
 use async_std::stream::{
     Interval, interval, StreamExt, Merge
 };
 use futures::{Future, future};
 use libp2p::PeerId;
-use serde::{Serialize, Deserialize};
+use serde::{Serialize, Deserialize, ser::{SerializeStruct, SerializeSeq}};
 
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone, Copy, PartialEq)]
@@ -15,6 +17,7 @@ pub enum MessageType {
     Prepare,
     Commit,
     RoundChange,
+    NewRound
 }
 
 impl Display for MessageType {
@@ -37,6 +40,12 @@ pub struct  Message {
     pub payload: Vec<u8>,
 }
 
+#[derive(Debug, Default, Clone)]
+pub struct NewRoundPayload {
+    // will be deserilized into PeerId, here for simplicity we implement this in function
+    signs: Vec<PeerId>,
+    block: Vec<u8>,
+}
 
 #[derive(Debug, Default, PartialEq)]
 pub enum ResponseType {
@@ -53,6 +62,7 @@ pub struct Response {
 
 #[derive(PartialEq, Debug, Eq)]
 pub enum Phase {
+    // only issued by next proposer
     NewRound,
     PrePrepared,
     Prepared,
@@ -72,6 +82,7 @@ pub struct State {
     pub round: u128,
     pub phase: Phase,
     pub proposer: u128,
+    pub pre_prepare_msg: Option<Message>,
     pub prepare_pool: Vec<u128>,
     pub commit_pool: Vec<u128>,
     // different from above two since there may be different next round will be used
@@ -98,6 +109,7 @@ impl State {
             round: 0,
             phase: Phase::NewRound,
             proposer: 0,
+            pre_prepare_msg: None,
             prepare_pool: vec![],
             commit_pool: vec![],
             round_change_pool: HashMap::new(),
@@ -119,15 +131,17 @@ impl State {
     }
 
     pub fn on_message(&mut self, msg: Message, peer: PeerId) -> Response {
-        if msg.round != self.round {
+
+        if msg.round != self.round && msg.m_type != MessageType::NewRound && msg.m_type != MessageType::RoundChange {
             return Response::default();
-        }
+        } 
 
         let resp = match msg.m_type {
             MessageType::PrePrepare => self.on_pre_prepare(msg),
             MessageType::Prepare => self.on_prepare(msg),
             MessageType::Commit => self.on_commit(msg),
             MessageType::RoundChange => self.on_round_change(msg),
+            MessageType::NewRound => self.on_new_round(msg),
         };
 
         // this means state change, refresh the `last_update_time`
@@ -140,16 +154,12 @@ impl State {
 
     fn on_pre_prepare(&mut self, msg: Message) -> Response {
         if self.phase != Phase::NewRound {
-            // do nothing
             return Response::default();
         }
+
         // we are not verifying peer here since the messages are sent through p2p encrypted channel
 
         // TODO: excute the message, then verify the checksum
-
-
-
-        // phase change
         self.phase = Phase::Prepared;
 
         self.prepare_pool.push(self.id);
@@ -168,18 +178,19 @@ impl State {
             r_type: ResponseType::Broadcast,
             m: msg,
         };
-        resp
+
+        return resp;
     }
 
     fn on_prepare(&mut self, msg: Message) -> Response {
-        if self.phase != Phase::Prepared {
+        if self.phase != Phase::Prepared  {
             return Response::default();
         }
         // TODO: implement a peerid to real id pool
 
         self.prepare_pool.push(msg.id);
         
-        if self.prepare_pool.len() as u128 > self.f * 2 + 1 {
+        if self.prepare_pool.len() as u128 >= self.f * 2 + 1 {
             self.phase = Phase::Committed;
 
             // commit self
@@ -201,13 +212,15 @@ impl State {
     }
 
     fn on_commit(&mut self, msg: Message) -> Response {
-        if self.phase != Phase::Committed {
+        if self.phase != Phase::Committed && self.phase != Phase::Prepared {
             return Response::default();
         }
 
         self.commit_pool.push(msg.id);
 
-        if self.commit_pool.len() as u128 > self.f * 2 + 1 {
+        println!("Commit pool len {0}", self.commit_pool.len());
+
+        if self.commit_pool.len() as u128 >= self.f * 2 + 1 {
             self.phase = Phase::FinalCommitted;
 
             return self.new_round();
@@ -218,20 +231,85 @@ impl State {
     }
 
     fn on_round_change(&mut self, msg: Message) -> Response {
-
         if let Some(pool) = self.round_change_pool.get_mut(&msg.round) {
-            pool.push(msg.id);
-            if pool.len() as u128 >= 2*self.f + 1 {
-                // update the round to be the newest one
-                self.round = msg.round;
+            if pool.contains(&msg.id) {
+                return Response::default(); 
+            }
 
-                println!("round change pool len {0}", self.round);
-                return self.new_round()
+            pool.push(msg.id);
+            println!("round change pool({0}) len {1}", msg.round, pool.len());
+            if pool.len() as u128 >= 2*self.f + 1 {
+                return self.round_change()
             }
         } else {
-            self.round_change_pool.insert(msg.id, vec![msg.id, ]);
+            self.round_change_pool.insert(msg.round, vec![msg.id, ]);
         }
+
         Response::default()
+    }
+
+    fn round_change(&mut self) -> Response {
+        if (self.peers.len() as u128) < self.f * 2 + 1 {
+            return Response::default();
+        }
+
+        self.phase = Phase::NewRound;
+        self.round += 1;
+
+        self.prepare_pool.clear();
+        self.commit_pool.clear();
+        self.round_change_pool.clear();
+
+
+        // is proposer, issue NewRound, add signatures of accepted round change peers
+        if self.id == self.round % (self.f * 2 + 1) {
+            println!("{}", "[IMPO] proposer".red());
+            self.phase = Phase::Prepared;
+
+            self.prepare_pool.push(self.id);
+
+            let msg = Message {
+                m_type: MessageType::NewRound,
+                id: self.id,
+                round: self.round,
+                payload: vec![],
+            };
+
+            let resp = Response {r_type: ResponseType::Broadcast, m: msg};
+
+            return resp;
+        }
+
+        Response::default()
+    }
+
+    fn on_new_round(&mut self, msg: Message) -> Response {
+        // TODO: verify signatures here 
+
+        // execute transaction as pre_prepare
+
+        // clear old pool
+        self.prepare_pool.clear();
+        self.commit_pool.clear();
+
+        self.phase = Phase::Prepared;
+
+        self.prepare_pool.push(self.id);
+        self.prepare_pool.push(msg.id);
+
+        let msg = Message {
+            id: self.id,
+            round: self.round,
+            m_type: MessageType::Prepare,
+            payload: vec![],
+        };
+
+        let resp = Response {
+            r_type: ResponseType::Broadcast,
+            m: msg
+        };
+
+        resp
     }
 
     pub fn on_new_peer(&mut self, peer: PeerId) -> Response {
@@ -241,6 +319,8 @@ impl State {
 
         // control initial nodes here 
         self.peers.insert(peer, self.f*3 + 2);
+
+        println!("peers len: {0}", self.peers.len());
 
         if self.peers.len() as u128 >= 3 * self.f  && !self.started {
             // start up
@@ -266,7 +346,7 @@ impl State {
             return Response::default()
         } 
         
-        // if the state is not changed from FinalCommitted, don't increse round
+        // except start up, increase round number
         if self.phase != Phase::NewRound {self.round = self.round + 1;} 
 
         self.commit_pool.clear();
@@ -275,10 +355,12 @@ impl State {
 
         self.phase = Phase::NewRound;
 
+        println!(":::NEWROUND::: {0}", self.round);
+
         // TODO: pick up some transactions here 
 
         // become proposer
-        if self.id == self.round % self.f {
+        if self.id == self.round % (self.f * 2 + 1) {
             println!("{:?} is proposer", self.id);
 
             self.prepare_pool.push(self.id);
@@ -314,12 +396,17 @@ impl State {
             // update the last update time
             self.last_update_time = Instant::now();
 
+            // change state to RoundChange, clear prepare and commit pool
+            self.phase = Phase::RoundChange;
+
             let msg = Message {
                 id: self.id,
                 round: self.round,
                 m_type: MessageType::RoundChange,
                 payload: vec![]
             };
+
+            self.on_round_change(msg.clone());
 
             let resp = Response {
                 r_type: ResponseType::Broadcast,

@@ -46,3 +46,10 @@ If want to test `RoundChange` functionality, set f to be 2 and close the window 
 
 #### Screenshots 
 
+f=1
+
+![f=1](./images/screenshot_1.png)
+
+f=2
+
+![f=2](./images/screenshot_2.png)
